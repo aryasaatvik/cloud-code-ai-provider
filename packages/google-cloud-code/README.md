@@ -139,31 +139,17 @@ const model = googleCloudCode('gemini-2.5-flash');
 
 ### Available Models
 
-**Gemini 2.5 Series:**
+Currently, only the following models work with Google Cloud Code:
+
 - `gemini-2.5-flash` - Fast, efficient model for most tasks
-- `gemini-2.5-flash-preview-04-17` - Preview version from April 2024
-- `gemini-2.5-flash-preview-05-20` - Preview version from May 2024
-- `gemini-2.5-flash-lite-preview-06-17` - Lightweight preview version
 - `gemini-2.5-pro` - More capable model for complex tasks
-- `gemini-2.5-pro-preview-05-06` - Pro preview from May 2024
-- `gemini-2.5-pro-preview-06-05` - Pro preview from June 2024
-
-**Gemini 2.0 Series:**
-- `gemini-2.0-flash` - Fast 2.0 generation model
-- `gemini-2.0-flash-lite` - Lightweight 2.0 model
-
-**Gemini 1.5 Series:**
-- `gemini-1.5-pro` - Previous generation pro model
-- `gemini-1.5-flash` - Previous generation flash model
-- `gemini-1.5-flash-8b` - 8B parameter version
 
 ### Model Capabilities
 
 | Model | Image Input | Object Generation | Tool Usage | Tool Streaming |
 |-------|-------------|-------------------|------------|----------------|
 | `gemini-2.5-flash` | No* | Yes | Yes | Yes |
-| `gemini-2.5-pro-preview` | No* | Yes | Yes | Yes |
-| `gemini-2.0-flash-exp` | No* | Yes | Yes | Yes |
+| `gemini-2.5-pro` | No* | Yes | Yes | Yes |
 
 *Note: Image input is not currently supported by the Cloud Code API
 
@@ -194,7 +180,7 @@ const provider = createGoogleCloudCode();
 
 // The provider automatically uses OpenCode's authentication
 const result = await generateText({
-  model: provider('gemini-2.0-flash-exp'),
+  model: provider('gemini-2.5-flash'),
   prompt: 'Hello, world!',
 });
 ```
