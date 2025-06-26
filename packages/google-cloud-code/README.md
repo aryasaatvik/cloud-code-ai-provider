@@ -76,6 +76,24 @@ The provider exports authentication utilities:
 ```ts
 import { GoogleCloudCodeAuth } from 'cloud-code-ai-provider';
 
+// Run the complete OAuth flow with browser authentication
+await GoogleCloudCodeAuth.authenticate();
+
+// Force re-authentication
+await GoogleCloudCodeAuth.authenticate({ force: true });
+
+// Use custom credential directory
+await GoogleCloudCodeAuth.authenticate({ 
+  credentialDirectory: '.myapp/credentials' 
+});
+
+// Check if authenticated
+const isAuth = await GoogleCloudCodeAuth.isAuthenticated();
+
+// Get user info
+const userInfo = await GoogleCloudCodeAuth.getUserInfo();
+console.log(`Authenticated as: ${userInfo.email}`);
+
 // Check current authentication
 const token = await GoogleCloudCodeAuth.getAccessToken();
 const projectId = await GoogleCloudCodeAuth.getProjectId();

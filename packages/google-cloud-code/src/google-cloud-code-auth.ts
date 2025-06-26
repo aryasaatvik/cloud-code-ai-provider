@@ -2,6 +2,11 @@ import { OAuth2Client, Credentials } from 'google-auth-library';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import * as http from 'http';
+import * as url from 'url';
+import * as crypto from 'crypto';
+import * as net from 'net';
+import open from 'open';
 
 /**
  * Google Cloud Code authentication module
@@ -276,6 +281,259 @@ export class GoogleCloudCodeAuth {
     }
   }
 
+  /**
+   * Complete OAuth authentication flow with browser
+   * Opens browser for authentication and handles the OAuth callback
+   * @param options - Optional configuration for the auth flow
+   * @returns Promise that resolves when authentication is complete
+   */
+  static async authenticate(options?: {
+    /** Force re-authentication even if already authenticated */
+    force?: boolean;
+    /** Custom success redirect URL */
+    successUrl?: string;
+    /** Custom failure redirect URL */
+    failureUrl?: string;
+    /** Skip browser opening */
+    skipBrowser?: boolean;
+    /** Custom directory for storing credentials */
+    credentialDirectory?: string;
+  }): Promise<void> {
+    const {
+      force = false,
+      successUrl = 'https://developers.google.com/gemini-code-assist/auth_success_gemini',
+      failureUrl = 'https://developers.google.com/gemini-code-assist/auth_failure_gemini',
+      skipBrowser = false,
+      credentialDirectory,
+    } = options || {};
+
+    // Set custom credential directory if provided
+    if (credentialDirectory) {
+      this.setCredentialDirectory(credentialDirectory);
+    }
+
+    // Check if already authenticated
+    if (!force && await this.loadCachedCredentials()) {
+      console.log('✅ Already authenticated. Use { force: true } to re-authenticate.');
+      return;
+    }
+
+    // Clear cache if forcing re-auth
+    if (force) {
+      await this.clearCache();
+    }
+
+    // Get available port for OAuth callback
+    const port = await this.getAvailablePort();
+    const redirectUri = `http://localhost:${port}/oauth2callback`;
+    const state = crypto.randomBytes(32).toString('hex');
+
+    // Generate auth URL
+    const authUrl = this.generateAuthUrl(redirectUri, state);
+
+    // Create OAuth callback server promise
+    const authPromise = this.createOAuthCallbackServer(port, state, redirectUri, successUrl, failureUrl);
+
+    // Open browser if not skipped
+    if (!skipBrowser) {
+      console.log('\n🔐 Google Cloud Code Authentication');
+      console.log('Opening browser for authentication...\n');
+      
+      try {
+        await open(authUrl);
+      } catch (e) {
+        console.log('Failed to open browser automatically.');
+      }
+    }
+    
+    console.log('Visit this URL to authenticate:');
+    console.log(`\n${authUrl}\n`);
+    console.log('Waiting for authentication...');
+
+    try {
+      await authPromise;
+      console.log('\n✅ Authentication successful!');
+      
+      // Setup user and get project ID
+      const projectId = await this.setupUser();
+      console.log(`📁 Project ID: ${projectId}`);
+      console.log(`📂 Credentials saved to: ${this.getCachedCredentialPath()}\n`);
+    } catch (error) {
+      console.error('\n❌ Authentication failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if the user is authenticated
+   * @returns True if authenticated with valid credentials
+   */
+  static async isAuthenticated(): Promise<boolean> {
+    try {
+      const client = await this.getOAuthClient();
+      const hasCredentials = await this.loadCachedCredentials();
+      if (!hasCredentials) return false;
+      
+      const { token } = await client.getAccessToken();
+      return !!token;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Get information about the authenticated user
+   * @returns User information including email
+   */
+  static async getUserInfo(): Promise<{ email?: string; name?: string; picture?: string }> {
+    const client = await this.getOAuthClient();
+    const { token } = await client.getAccessToken();
+    
+    if (!token) {
+      throw new Error('Not authenticated');
+    }
+
+    const res = await client.request({
+      url: 'https://www.googleapis.com/oauth2/v1/userinfo',
+    });
+    
+    return res.data as { email?: string; name?: string; picture?: string };
+  }
+
+  /**
+   * Find an available port for the OAuth callback server
+   */
+  private static getAvailablePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      let port = 0;
+      try {
+        const server = net.createServer();
+        server.listen(0, () => {
+          const address = server.address()! as net.AddressInfo;
+          port = address.port;
+        });
+        server.on('listening', () => {
+          server.close();
+          server.unref();
+        });
+        server.on('error', (e) => reject(e));
+        server.on('close', () => resolve(port));
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
+  /**
+   * Create OAuth callback server
+   */
+  private static createOAuthCallbackServer(
+    port: number,
+    expectedState: string,
+    redirectUri: string,
+    successUrl: string,
+    failureUrl: string
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const server = http.createServer(async (req, res) => {
+        try {
+          const parsedUrl = new url.URL(req.url!, `http://localhost:${port}`);
+          
+          // Log incoming request for debugging
+          console.log(`OAuth callback received: ${req.url}`);
+          
+          // Only handle OAuth callback
+          if (parsedUrl.pathname !== '/oauth2callback') {
+            res.writeHead(404);
+            res.end('Not found');
+            return;
+          }
+
+          const code = parsedUrl.searchParams.get('code');
+          const state = parsedUrl.searchParams.get('state');
+          const error = parsedUrl.searchParams.get('error');
+
+          // Handle OAuth errors
+          if (error) {
+            res.writeHead(301, { Location: failureUrl });
+            res.end();
+            server.close(() => reject(new Error(`OAuth error: ${error}`)));
+            return;
+          }
+
+          // Validate state for CSRF protection
+          if (state !== expectedState) {
+            res.writeHead(301, { Location: failureUrl });
+            res.end();
+            server.close(() => reject(new Error('State mismatch - possible CSRF attack')));
+            return;
+          }
+
+          // Validate authorization code
+          if (!code) {
+            res.writeHead(301, { Location: failureUrl });
+            res.end();
+            server.close(() => reject(new Error('No authorization code received')));
+            return;
+          }
+
+          // Exchange code for tokens
+          console.log('Exchanging authorization code for tokens...');
+          const client = new OAuth2Client({
+            clientId: CLIENT_ID,
+            clientSecret: CLIENT_SECRET,
+            redirectUri: redirectUri,
+          });
+
+          const { tokens } = await client.getToken(code);
+          console.log('Token exchange successful');
+          
+          await this.setCredentials(tokens);
+          console.log('Credentials saved');
+
+          // Success redirect
+          res.writeHead(301, { Location: successUrl });
+          res.end();
+
+          // Close server immediately and resolve
+          setImmediate(() => {
+            server.close(() => {
+              console.log('OAuth server closed');
+              resolve();
+            });
+          });
+
+        } catch (error) {
+          console.error('OAuth callback error:', error);
+          res.writeHead(500, { 'Content-Type': 'text/html' });
+          res.end(`
+            <html>
+              <body style="font-family: system-ui; padding: 40px; text-align: center;">
+                <h1>❌ Authentication Error</h1>
+                <p>An error occurred during authentication. Please check the console and try again.</p>
+                <p style="color: #666; font-size: 14px;">${error instanceof Error ? error.message : 'Unknown error'}</p>
+              </body>
+            </html>
+          `);
+          server.close(() => reject(error));
+        }
+      });
+
+      server.listen(port, () => {
+        console.log(`OAuth callback server listening on port ${port}`);
+      });
+
+      // Add timeout (5 minutes)
+      const timeout = setTimeout(() => {
+        server.close(() => reject(new Error('Authentication timeout')));
+      }, 5 * 60 * 1000);
+
+      server.on('close', () => {
+        clearTimeout(timeout);
+      });
+    });
+  }
+
   static setCredentialDirectory(directory: string): void {
     this.customCredentialDir = directory;
   }
@@ -294,6 +552,7 @@ export class GoogleCloudCodeAuth {
     }
     
     const baseDir = this.customCredentialDir || DEFAULT_GEMINI_DIR;
+    console.log('baseDir', baseDir);
     return path.join(os.homedir(), baseDir, CREDENTIAL_FILENAME);
   }
 
